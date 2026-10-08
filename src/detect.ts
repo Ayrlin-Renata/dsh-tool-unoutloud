@@ -285,7 +285,10 @@ function parseCallRegion(region: string, depth = 0): ParseResult {
   if (t.startsWith('{')) {
     const parsed = looseJson(t);
     if (!isPlainObject(parsed)) return { reason: 'the call JSON is not parseable' };
-    return callFromJson(parsed);
+    // callFromJson returns a loose shape (name/args XOR reason); narrow it to ParseResult.
+    const inner = callFromJson(parsed);
+    if (inner.name && inner.args) return { name: inner.name, args: inner.args };
+    return { reason: inner.reason ?? 'the call JSON is not a recognizable call' };
   }
   if (t.startsWith('<')) return parseXmlCall(t);
   if (depth < 2) {

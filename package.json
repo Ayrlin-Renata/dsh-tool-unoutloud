@@ -3,17 +3,20 @@
   "version": "0.1.0",
   "description": "DeepSeek Harness plugin: detects when the agent writes a tool call (or raw XML) as plain user-visible chat text by mistake, nudges the agent ('was that a mistake?'), and offers a low-token retry_stray_call tool when the call is parseable — with explicit feedback when it is not.",
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./dist/index.js"
   },
   "files": [
     "src",
+    "dist",
+    "scripts",
     "cordis.patch.yml",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/detect.test.mjs test/integration.test.mjs"
+    "build": "node --disable-warning=ExperimentalWarning scripts/build.mjs",
+    "test": "node --disable-warning=ExperimentalWarning scripts/build.mjs && node --test test/detect.test.mjs test/integration.test.mjs test/dist.test.mjs"
   },
   "dsh": {
     "bundle": {

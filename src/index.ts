@@ -332,7 +332,10 @@ export function apply(ctx: Context, config?: Partial<UnoutloudConfig>): void {
             status: 'retried',
             tool_name: pending.name,
             attempts: pending.attempts,
-            replay_content: [...replay.content],
+            // Canonical JSON value per the output schema: ContentBlock
+            // interfaces have no index signature, so round-trip to plain
+            // records (render() re-materializes them as ContentBlocks).
+            replay_content: replay.content.map((b) => JSON.parse(JSON.stringify(b))),
           };
         },
       }),
@@ -351,17 +354,11 @@ export function apply(ctx: Context, config?: Partial<UnoutloudConfig>): void {
   });
 
   // The rescue hook: serial, awaited before the turn boundary commits.
-  ctx.on('agent/turn-stopping', (payload: {
-    agent: {
-      session: unknown;
-      steer: (message: unknown) => unknown;
-    };
-    turn: number;
-    signal?: AbortSignal;
-  }) => {
+  // Payload typed from the event map (Agent / turn / signal).
+  ctx.on('agent/turn-stopping', (payload) => {
     try {
       if (cfg.enabled === false) return;
-      const { agent, turn, signal } = payload ?? {};
+      const { agent, turn, signal } = payload;
       if (!agent || signal?.aborted) return;
 
       const sid = sessionIdOf(agent.session);
@@ -379,8 +376,8 @@ export function apply(ctx: Context, config?: Partial<UnoutloudConfig>): void {
       if (st.lastNudgeAt > 0 && Date.now() - st.lastNudgeAt < cfg.cooldownMs) return;
 
       const session = agent.session as {
-        snapshotEvents?: () => unknown[];
-        events?: unknown[];
+        snapshotEvents?: () => readonly unknown[];
+        events?: readonly unknown[];
       };
       const events =
         typeof session?.snapshotEvents === 'function'
