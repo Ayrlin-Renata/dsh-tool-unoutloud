@@ -49,7 +49,10 @@ calls, and numeric/boolean/JSON parameter values.
 
 ### Safety rails
 
-- **one nudge per turn**, per-session cap (default 10), cooldown (default 15 s),
+- **loop-bounded nudging**: a repeat of the *identical* stall text is never
+  re-nudged in the same turn; a **different** new stall inside a steered-open
+  turn does nudge again (a steer keeps the same turn number across many steps),
+  bounded by the per-session cap (default 10) and cooldown (default 15 s),
 - `interrupted` assistant messages are never judged,
 - replies containing real `tool-call` blocks are left alone (that turn ended by
   tool design, not by a text-only stall),

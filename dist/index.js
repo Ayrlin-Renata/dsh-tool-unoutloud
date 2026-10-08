@@ -89,6 +89,8 @@ const DEFAULTS                  = {
                  
                       
                          
+                                                                                  
+                                 
                          
  
 
@@ -109,6 +111,13 @@ function sessionIdOf(session         )         {
   } catch {
     return '';
   }
+}
+
+/** Cheap stable fingerprint of a stall (length + djb2 over the full text). */
+function fingerprintOf(text        )         {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+  return `${text.length}:${h}`;
 }
 
 function isPlainObject(v         )                               {
@@ -151,13 +160,23 @@ export function apply(ctx         , config                           )       {
     return st;
   };
 
-  /** Registered tool names from the global registry view; null = check unavailable. */
-  const registeredNames = ()                     => {
+  /**
+   * Registered tool names as `scope` (pass the calling agent) sees them —
+   * agent-plane tools are invisible to the global view, so the scoped view is
+   * authoritative; the global view is only a fallback when the scoped call
+   * itself throws. null = check unavailable (detection skips the check).
+   */
+  const registeredNames = (scope         )                     => {
+    const from = (list         )              =>
+      new Set((list                           ).map((s) => s.name));
     try {
-      const schemas = ctx.tools.schemas()                           ;
-      return new Set(schemas.map((s) => s.name));
+      return from(ctx.tools.schemas(scope));
     } catch {
-      return null;
+      try {
+        return from(ctx.tools.schemas());
+      } catch {
+        return null;
+      }
     }
   };
 
@@ -370,10 +389,18 @@ export function apply(ctx         , config                           )       {
         sweepRetryTool();
       }
 
-      // Loop guards: at most one nudge per turn, per-session cap, cooldown.
-      if (st.lastNudgedTurn === turn) return;
-      if (st.nudges >= cfg.maxNudgesPerSession) return;
-      if (st.lastNudgeAt > 0 && Date.now() - st.lastNudgeAt < cfg.cooldownMs) return;
+      // Loop guards: per-session cap and cooldown. The same-stall guard lives
+      // next to the text fingerprint below — a steer keeps the SAME turn number
+      // open across many steps, so a blanket per-turn lockout would swallow a
+      // second, genuinely different stall minutes later.
+      if (st.nudges >= cfg.maxNudgesPerSession) {
+        log('debug', `skip turn ${turn}: session cap ${cfg.maxNudgesPerSession} reached`);
+        return;
+      }
+      if (st.lastNudgeAt > 0 && Date.now() - st.lastNudgeAt < cfg.cooldownMs) {
+        log('debug', `skip turn ${turn}: cooldown ${cfg.cooldownMs}ms not elapsed`);
+        return;
+      }
 
       const session = agent.session     
                                                   
@@ -385,7 +412,10 @@ export function apply(ctx         , config                           )       {
           : Array.isArray(session?.events)
             ? session.events
             : [];
-      if (!Array.isArray(events) || events.length === 0) return;
+      if (!Array.isArray(events) || events.length === 0) {
+        log('debug', `skip turn ${turn}: no session events visible`);
+        return;
+      }
 
       // Walk backwards: the closing turn's final assistant message, and the
       // latest direct-user prompt (for the example-skip guard).
@@ -396,7 +426,11 @@ export function apply(ctx         , config                           )       {
         const e = events[i]       ;
         if (!lastAsst && e?.type === 'assistant/message') {
           if (e.data && (e.data.turn          ) === turn) lastAsst = e;
-          else if (e.data && (e.data.turn          ) !== turn) return; // closed turn had no message
+          else if (e.data && (e.data.turn          ) !== turn) {
+            // The closing turn produced no assistant message at all.
+            log('debug', `skip turn ${turn}: latest assistant message belongs to another turn`);
+            return;
+          }
         }
         if (e?.type === 'user/message' && (e.data?.source                                 )?.kind === 'user') {
           lastUser = e;
@@ -404,21 +438,43 @@ export function apply(ctx         , config                           )       {
         }
         if (lastAsst && lastUser) break;
       }
-      if (!lastAsst) return;
-      if (lastAsst.data?.interrupted) return;
+      if (!lastAsst) {
+        log('debug', `skip turn ${turn}: no assistant message found for the closing turn`);
+        return;
+      }
+      if (lastAsst.data?.interrupted) {
+        log('debug', `skip turn ${turn}: final assistant message is interrupted`);
+        return;
+      }
 
       const content = lastAsst.data?.message                                       ;
       const blocks = Array.isArray(content?.content) ? content.content : null;
       if (!blocks) return;
       // Real tool calls in the final message mean the turn ended by tool
       // design (concludesTurn), not by a text-only stall — leave it alone.
-      if (blocks.some((b) => (b                     )?.type === 'tool-call')) return;
+      if (blocks.some((b) => (b                     )?.type === 'tool-call')) {
+        log('debug', `skip turn ${turn}: final message carries real tool-call blocks`);
+        return;
+      }
 
       const text = textOf(blocks);
-      if (text.trim() === '') return;
+      if (text.trim() === '') {
+        log('debug', `skip turn ${turn}: final message has no text blocks`);
+        return;
+      }
+
+      // Same-turn re-nudge policy: block only a repeat of the SAME stall text
+      // (the loop this guard exists for). A different stall in a steered-open
+      // turn is a new mistake and gets its own nudge — still bounded by the
+      // session cap and cooldown above.
+      const fingerprint = fingerprintOf(text);
+      if (st.lastNudgedTurn === turn && st.lastNudgedFingerprint === fingerprint) {
+        log('debug', `skip turn ${turn}: identical stall already nudged this turn`);
+        return;
+      }
 
       const lastUserText = lastUser ? textOf(lastUser.data?.content) : '';
-      const registered = registeredNames();
+      const registered = registeredNames(agent);
       const verdict = detect(
         { text, lastUserText },
         {
@@ -458,6 +514,7 @@ export function apply(ctx         , config                           )       {
       );
 
       st.lastNudgedTurn = turn;
+      st.lastNudgedFingerprint = fingerprint;
       st.nudges += 1;
       st.lastNudgeAt = Date.now();
       log(

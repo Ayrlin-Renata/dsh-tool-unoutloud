@@ -31,6 +31,7 @@ function makeCtx() {
   const executed = [];
   const logs = [];
   const cleanups = [];
+  const schemaCalls = [];
   const ctx = {
     logger: {
       info: (...a) => logs.push(['info', ...a]),
@@ -50,7 +51,8 @@ function makeCtx() {
         tools.set(def.name, def);
         return () => tools.delete(def.name);
       },
-      schemas() {
+      schemas(...args) {
+        schemaCalls.push(args[0]);
         return [...tools.values()].map((d) => ({
           name: d.name,
           description: d.description,
@@ -71,7 +73,7 @@ function makeCtx() {
       },
     },
   };
-  return { ctx, handlers, tools, executed, logs, cleanups };
+  return { ctx, handlers, tools, executed, logs, cleanups, schemaCalls };
 }
 
 function makeSession(id, events) {
@@ -91,7 +93,7 @@ const strayText =
   '<invoke name="fs_read">' + '<parameter name="path">a.txt' + close('parameter') + close('invoke');
 
 test('retryable verdict steers a nudge and registers the retry tool', () => {
-  const { ctx, handlers, tools, logs } = makeCtx();
+  const { ctx, handlers, tools, logs, schemaCalls } = makeCtx();
   // Pretend the stray target tool exists in the registry.
   tools.set('fs_read', { name: 'fs_read', description: 'read', parameters: {} });
   plugin.apply(ctx, { cooldownMs: 0 });
@@ -116,14 +118,19 @@ test('retryable verdict steers a nudge and registers the retry tool', () => {
   assert.match(text, /fs_read/);
   assert.match(text, /Was that a mistake\?/i);
   assert.ok(tools.has('retry_stray_call'), 'retry tool registered while pending');
+  assert.equal(
+    schemaCalls.at(-1),
+    agent,
+    'registry must be viewed through the agent scope (agent-plane tools are invisible globally)',
+  );
   assert.ok(
     logs.some((l) => l.some((x) => typeof x === 'string' && x.includes('nudged turn 1'))),
     'nudge logged',
   );
 
-  // Same turn again: per-turn guard must block a second nudge.
+  // Same turn again with the IDENTICAL stall text: loop guard must block.
   fire(handlers, { agent, turn: 1 });
-  assert.equal(steered.length, 1, 'one nudge per turn');
+  assert.equal(steered.length, 1, 'identical repeat in the same turn stays blocked');
 
   // Another session with a perfectly clean reply: no nudge.
   const cleanSession = makeSession('S3', [
@@ -178,6 +185,40 @@ test('retry_stray_call re-dispatches the parsed call and clears pending', async 
 
   // A stale call now fails loudly with actionable feedback.
   await assert.rejects(() => def.execute({}, exec), /NO_PENDING/);
+});
+
+test('steered-open turn: a different new stall re-nudges; identical repeat is blocked', () => {
+  const { ctx, handlers, tools } = makeCtx();
+  tools.set('fs_read', { name: 'fs_read', description: 'read', parameters: {} });
+  tools.set('grep', { name: 'grep', description: 'search', parameters: {} });
+  plugin.apply(ctx, { cooldownMs: 0 });
+
+  const events = [
+    { type: 'user/message', data: { content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: strayText }] } } },
+  ];
+  const session = { header: { id: 'S1' }, snapshotEvents: () => events };
+  const steered = [];
+  const agent = { session, steer: (m) => steered.push(m) };
+
+  fire(handlers, { agent, turn: 1 });
+  assert.equal(steered.length, 1, 'first stall nudged');
+
+  // The steer keeps turn 1 open; the model recovers, works on, and stalls
+  // again with a DIFFERENT stray call (the production miss: a grep-stray in a
+  // turn already nudged for a read-stray).
+  const secondText =
+    '<invoke name="grep">' + '<parameter name="pattern">x' + close('parameter') + close('invoke');
+  events[1] = {
+    type: 'assistant/message',
+    data: { turn: 1, message: { content: [{ type: 'text', text: secondText }] } },
+  };
+  fire(handlers, { agent, turn: 1 });
+  assert.equal(steered.length, 2, 'a different stall in the steered-open turn re-nudges');
+
+  // The SAME second stall repeating is a genuine loop — blocked.
+  fire(handlers, { agent, turn: 1 });
+  assert.equal(steered.length, 2, 'identical repeat of the nudged stall is blocked');
 });
 
 test('not-retryable verdict nudges without registering the retry tool', () => {
