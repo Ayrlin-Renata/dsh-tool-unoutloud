@@ -1,0 +1,31 @@
+{
+  "name": "dsh-tool-unoutloud",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: detects when the agent writes a tool call (or raw XML) as plain user-visible chat text by mistake, nudges the agent ('was that a mistake?'), and offers a low-token retry_stray_call tool when the call is parseable — with explicit feedback when it is not.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/detect.test.mjs test/integration.test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "tool-call-recovery"
+  ],
+  "license": "MIT"
+}

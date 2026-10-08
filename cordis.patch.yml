@@ -1,0 +1,7 @@
+# Bundle/link mount row for dsh-tool-unoutloud.
+# Used when the package is added to a profile (e.g. `dsh plugin --profile web add link:...`),
+# which makes `dsh-tool-unoutloud` resolvable so this row can reference it by name.
+# For the direct scratch mount (edit the profile's cordis.patch.yml instead), see README.md.
+- insert:
+    - id: unoutloud
+      name: 'dsh-tool-unoutloud'
