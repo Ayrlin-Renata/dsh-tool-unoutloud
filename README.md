@@ -57,8 +57,10 @@ calls, and numeric/boolean/JSON parameter values.
 - replies containing real `tool-call` blocks are left alone (that turn ended by
   tool design, not by a text-only stall),
 - examples are protected: calls buried in prose or inside markdown fences are
-  skipped, and `exampleSkipRegex` is tested against the last *direct user*
-  prompt ("show me an example…"),
+  skipped, and `exampleSkipRegex` is tested against the **first and last 300
+  chars** of the last *direct user* prompt ("show me an example…") — so a
+  multi-KB paste that merely *quotes* "for example" mid-text cannot disable
+  detection for the turn,
 - the retry tool is registered **lazily** and unregistered when nothing is
   pending (its schema would otherwise cost tokens on every request),
 - pending calls expire (`retryTtlMs`, default 5 min) and are single-shot on

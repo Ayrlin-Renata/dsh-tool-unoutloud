@@ -48,7 +48,9 @@
                                                           
      
                       
-                                                                                        
+                                                                             
+                                                                             
+                                         
                                    
                                                                              
                         
@@ -73,12 +75,21 @@ export const DEFAULT_PATTERNS           = [
 ];
 
 /**
- * Default example-skip guard, tested against the last direct-user prompt: when
- * the human asked for an example / a demonstration / a made-up snippet, an
- * XML-shaped reply is intentional. Empty string disables the guard.
+ * Default example-skip guard, tested against the edges of the last
+ * direct-user prompt: when the human asked for an example / a demonstration /
+ * a made-up snippet, an XML-shaped reply is intentional. Empty string disables
+ * the guard.
  */
 export const DEFAULT_EXAMPLE_SKIP =
   '(?:for example|for instance|example of|as an example|show me an? example|demonstrat|illustrat|pretend|make up)';
+
+/**
+ * Chars of each prompt edge tested by the example-skip guard. Asks live at the
+ * head ("show me an example…") or the tail (context paste, then the ask); a
+ * skip-word buried mid-paste in a multi-KB quoted document is incidental and
+ * must not disable detection for the turn.
+ */
+export const EXAMPLE_SKIP_EDGE = 300;
 
 const ENTITIES                         = {
   '&lt;': '<',
@@ -123,6 +134,16 @@ function looseJson(raw        )          {
 
 function isPlainObject(v         )                               {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** Fraction of `s` covered by markup tags (open/close/self-closing/doctype). */
+function tagRatio(s        )         {
+  if (s.length === 0) return 0;
+  const tagRe = /<[A-Za-z!/?][^<>]*>/g;
+  let tagLen = 0;
+  let m                        ;
+  while ((m = tagRe.exec(s)) !== null) tagLen += m[0].length;
+  return tagLen / s.length;
 }
 
 /** Slice one balanced JSON object starting at `from`; falls back to the last `}`. */
@@ -332,11 +353,18 @@ export function detect(input             , options                = {})         
     if (original.trim() === '') return { kind: 'none' };
 
     // Example-skip guard: the human asked for an example, so XML-shaped output
-    // is intentional. Applied before anything else.
+    // is intentional. Applied before anything else — but only against the
+    // edges of the prompt (see EXAMPLE_SKIP_EDGE): a "For example" quoted at
+    // index 21k of a 46KB advice paste is not a request for an example.
     const skipSrc = options.exampleSkipRegex ?? DEFAULT_EXAMPLE_SKIP;
     if (skipSrc && input.lastUserText) {
       try {
-        if (new RegExp(skipSrc, 'i').test(input.lastUserText)) return { kind: 'none' };
+        const prompt = input.lastUserText;
+        const skipText =
+          prompt.length > EXAMPLE_SKIP_EDGE * 2
+            ? prompt.slice(0, EXAMPLE_SKIP_EDGE) + ' ' + prompt.slice(-EXAMPLE_SKIP_EDGE)
+            : prompt;
+        if (new RegExp(skipSrc, 'i').test(skipText)) return { kind: 'none' };
       } catch {
         /* invalid user pattern: ignore the guard */
       }
@@ -409,14 +437,23 @@ export function detect(input             , options                = {})         
     if (unregisteredReasons.length > 0) return { kind: 'shaped', reason: unregisteredReasons[0] };
     if (parseReasons.length > 0) return { kind: 'shaped', reason: parseReasons[0] };
 
-    // No (surviving) call: is the reply raw XML markup?
+    // No (surviving) call: is the reply raw XML markup — or does it END with
+    // the closing-tag tail of a stray call whose opening was never emitted?
     const trimmed = text.trim();
     if (trimmed.startsWith('<')) {
-      let tagLen = 0;
-      const tagRe = /<[A-Za-z!/?][^<>]*>/g;
-      let tm                        ;
-      while ((tm = tagRe.exec(trimmed)) !== null) tagLen += tm[0].length;
-      if (trimmed.length > 0 && tagLen / trimmed.length >= dominance) return { kind: 'xml-only' };
+      if (trimmed.length > 0 && tagRatio(trimmed) >= dominance) return { kind: 'xml-only' };
+    } else if (deduped.length === 0) {
+      // Orphan tail: no stray-call opening appears ANYWHERE in the reply (a
+      // complete inline example elsewhere makes the tail part of that example,
+      // already judged by the lead-in guard above).
+      const tailMatch = trimmed.match(/(?:<\/[A-Za-z_][\w.:-]*>[\s\S]*)$/);
+      if (tailMatch && tagRatio(tailMatch[0]) >= dominance) {
+        return {
+          kind: 'shaped',
+          reason:
+            'the reply ends with the closing tags of a stray tool call, but the call itself was never emitted',
+        };
+      }
     }
     return { kind: 'none' };
   } catch {

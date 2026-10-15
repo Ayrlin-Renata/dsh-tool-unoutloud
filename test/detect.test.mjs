@@ -85,6 +85,39 @@ test('shaped: invoke without a name attribute produces a reason', () => {
   assert.match(v.reason, /name attribute/);
 });
 
+test('shaped: prose lead-in ending in a closing-tag tail (opening never emitted)', () => {
+  const text =
+    'Here is the snippet you asked for:\n\n' +
+    close('parameter') + '\n' + close('invoke') + '\n```\n' + close('assistant');
+  const v = detect({ text });
+  assert.equal(v.kind, 'shaped');
+  assert.match(v.reason, /closing tags/);
+});
+
+test('xml-only: closing-tag tail with no prose (real session shape)', () => {
+  const text =
+    '\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n' +
+    close('parameter') + '\n' + close('invoke') + '\n```\n\n' + close('assistant');
+  const v = detect({ text });
+  assert.equal(v.kind, 'xml-only');
+});
+
+test('xml-only: doubled closing-tag tail with a fence between', () => {
+  const text =
+    close('parameter') + '\n' + close('invoke') + '\n```\n' + close('assistant') + '\n' +
+    '\n'.repeat(15) +
+    close('parameter') + '\n' + close('invoke') + '\n```';
+  const v = detect({ text });
+  assert.equal(v.kind, 'xml-only');
+});
+
+test('none: prose that merely mentions a closing tag keeps trailing prose', () => {
+  const text =
+    'You close the block with ' + close('invoke') + ' and then your reply continues as normal.';
+  const v = detect({ text });
+  assert.equal(v.kind, 'none');
+});
+
 test('shaped: parsed call targeting an unregistered tool reports it', () => {
   const v = detect({ text: INVOKE }, { isToolRegistered: (n) => n === 'some_other_tool' });
   assert.equal(v.kind, 'shaped');
@@ -144,6 +177,30 @@ test('custom exampleSkipRegex replaces the default', () => {
     { text: INVOKE, lastUserText: 'zzz nothing relevant here' },
     { exampleSkipRegex: 'nothing relevant' },
   );
+  assert.equal(v.kind, 'none');
+});
+
+test('example-skip: word buried mid-paste in a long prompt does NOT disable detection', () => {
+  // The nialyns-razor regression: a 46KB advice paste quoted "For example" at
+  // index 21k; the real ask sat in the first ~200 chars.
+  const paste =
+    'Here is the research you asked for. '.repeat(40) +
+    'For example, "the scent of" is not inherently bad. ' +
+    'More quoted advice follows. '.repeat(40);
+  assert.ok(paste.length > 600, 'fixture is a long paste');
+  const v = detect({ text: INVOKE, lastUserText: paste });
+  assert.equal(v.kind, 'retryable', 'a mid-paste "For example" must not zero detection');
+});
+
+test('example-skip: ask at the tail (context paste, then the request) still disables', () => {
+  const filler = 'context context context '.repeat(40);
+  const v = detect({ text: INVOKE, lastUserText: filler + 'now show me an example of that tag' });
+  assert.equal(v.kind, 'none');
+});
+
+test('example-skip: ask at the head of a long prompt still disables', () => {
+  const filler = 'context context context '.repeat(40);
+  const v = detect({ text: INVOKE, lastUserText: 'show me an example of that tag first. ' + filler });
   assert.equal(v.kind, 'none');
 });
 
