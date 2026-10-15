@@ -27,8 +27,11 @@ export function nudgeText(verdict: Verdict, toolName: string): string {
         `Your previous reply wrote a tool call as plain text instead of making an actual ` +
         `tool call, so nothing executed and the turn was about to end. Was that a mistake? ` +
         `If yes, call ${toolName} now — it will run the detected call (tool: ${verdict.name}) ` +
-        `with its parsed arguments as a real tool call. If it was intentional, ignore this ` +
-        `and reply to the user normally.`
+        `once, with its parsed arguments, as a real tool call` +
+        ((verdict.identicalCopies ?? 1) > 1
+          ? ` (the reply repeated that same call ${verdict.identicalCopies} times; the retry still sends it only once)`
+          : ``) +
+        `. If it was intentional, ignore this and reply to the user normally.`
       );
     case 'shaped':
       return (

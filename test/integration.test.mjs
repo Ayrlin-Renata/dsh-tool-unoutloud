@@ -282,3 +282,47 @@ test('teardown disposes the retry tool', () => {
   for (const cleanup of cleanups) cleanup();
   assert.ok(!tools.has('retry_stray_call'), 'fiber teardown unregisters the tool');
 });
+
+test('duplicated stray: retry dispatches ONCE and reports identical_copies', async () => {
+  const { ctx, handlers, tools, executed } = makeCtx();
+  tools.set('fs_read', { name: 'fs_read', description: 'read', parameters: {} });
+  plugin.apply(ctx, { cooldownMs: 0 });
+
+  const LT = String.fromCharCode(60);
+  const dupStray =
+    strayText + '\n' + '[Tool calls marked as invalid or timed out]' + '\n' + strayText;
+  const session = makeSession('S1', [
+    { type: 'user/message', data: { content: [{ type: 'text', text: 'read the file' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: dupStray }] } } },
+  ]);
+  const steered = [];
+  const agent = { session, steer: (m) => steered.push(m) };
+  fire(handlers, { agent, turn: 1 });
+
+  // The nudge must tell the agent the retry will deduplicate.
+  const text = steered[0].content.map((b) => b.text ?? '').join('\n');
+  assert.match(text, /repeated that same call 2 times/);
+  assert.match(text, /only once/);
+
+  const def = tools.get('retry_stray_call');
+  assert.ok(def, 'retry tool available');
+  const exec = {
+    callId: 'c1',
+    rootCallId: 'r1',
+    token: { tok: 1 },
+    signal: new AbortController().signal,
+    agent: { session },
+    deferContext() {},
+    concludeTurn() {},
+  };
+  const value = await def.execute({}, exec);
+
+  assert.equal(executed.length, 1, 'the duplicated call dispatches exactly ONCE');
+  assert.equal(value.identical_copies, 2, 'tool result reports the copy count');
+
+  // The rendered result tells the agent the dedup happened.
+  const rendered = def.output.render({}, value);
+  const head = rendered.map((b) => b.text ?? '').join('\n');
+  assert.match(head, /contained 2 identical copies/);
+  assert.match(head, /replayed it once/);
+});

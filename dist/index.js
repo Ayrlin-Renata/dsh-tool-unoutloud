@@ -83,6 +83,8 @@ const DEFAULTS                  = {
                                 
                     
                    
+                                                                          
+                           
  
 
                         
@@ -231,6 +233,7 @@ export function apply(ctx         , config                           )       {
               status: { type: 'string', required: true },
               tool_name: { type: 'string', required: true },
               attempts: { type: 'integer', required: true },
+              identical_copies: { type: 'integer', required: true },
               replay_content: {
                 type: 'array',
                 items: { type: 'object', additionalProperties: true },
@@ -243,11 +246,17 @@ export function apply(ctx         , config                           )       {
                               
                                  
                                 
+                                        
                                          
              ;
+            const dedupNote =
+              (value.identical_copies ?? 1) > 1
+                ? ` The reply contained ${value.identical_copies} identical copies; this ` +
+                  `replayed it once.`
+                : '';
             const head = `retry_stray_call: ${value.status ?? 'done'} — re-ran '${
               value.tool_name ?? '?'
-            }' (attempt ${value.attempts ?? '?'}).`;
+            }' (attempt ${value.attempts ?? '?'}).${dedupNote}`;
             const blocks = Array.isArray(value.replay_content)
               ? ((value.replay_content                  ).filter(
                   (b) => b && typeof b.type === 'string',
@@ -351,6 +360,7 @@ export function apply(ctx         , config                           )       {
             status: 'retried',
             tool_name: pending.name,
             attempts: pending.attempts,
+            identical_copies: pending.identicalCopies ?? 1,
             // Canonical JSON value per the output schema: ContentBlock
             // interfaces have no index signature, so round-trip to plain
             // records (render() re-materializes them as ContentBlocks).
@@ -498,6 +508,7 @@ export function apply(ctx         , config                           )       {
           args: verdict.args,
           expiresAt: Date.now() + cfg.retryTtlMs,
           attempts: 0,
+          identicalCopies: verdict.identicalCopies ?? 1,
         };
         ensureRetryTool();
       } else {

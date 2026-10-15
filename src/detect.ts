@@ -26,6 +26,13 @@ export type Verdict =
       name: string;
       /** Parsed (and normalized) arguments for the stray call. */
       args: Record<string, unknown>;
+      /**
+       * How many times this exact call (same tool + same parsed arguments)
+       * appears in the reply. Models that hit an invalid/timed-out tool call
+       * often re-emit the identical call in the same reply, so a retry must
+       * send it exactly once — never one dispatch per copy.
+       */
+      identicalCopies?: number;
     }
   | { kind: 'shaped'; reason: string }
   | { kind: 'xml-only' };
@@ -146,6 +153,16 @@ function tagRatio(s: string): number {
   return tagLen / s.length;
 }
 
+/** Canonical JSON (recursively key-sorted) to compare two parsed arg sets. */
+function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return '[' + v.map(stableJson).join(',') + ']';
+  if (isPlainObject(v)) {
+    const keys = Object.keys(v).sort();
+    return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableJson(v[k])).join(',') + '}';
+  }
+  return JSON.stringify(v) ?? 'null';
+}
+
 /** Slice one balanced JSON object starting at `from`; falls back to the last `}`. */
 function sliceJson(s: string, from: number): string {
   let depth = 0;
@@ -187,7 +204,10 @@ function sliceXml(s: string, from: number): string {
   const gt = s.indexOf('>', om.index);
   if (gt < 0) return s.slice(from); // no `>` at all: element starts but never closes
   if (s[gt - 1] === '/') return s.slice(from, gt + 1); // self-closing
-  const closeRe = new RegExp(`</\\s*${escapeRe(tag)}\\s*>`, 'i');
+  // 'g' is required: without it, lastIndex is ignored and exec always searches
+  // from index 0 — for a duplicated call that finds the FIRST copy's close tag
+  // (before `from`), yielding an empty/wrong region for the second copy.
+  const closeRe = new RegExp(`</\\s*${escapeRe(tag)}\\s*>`, 'gi');
   closeRe.lastIndex = gt + 1;
   const cm = closeRe.exec(s);
   if (cm) return s.slice(from, cm.index + cm[0].length);
@@ -428,7 +448,31 @@ export function detect(input: DetectInput, options: DetectOptions = {}): Verdict
       if (prefixLen > leadInMax && region.length < dominance * text.length) continue;
       const parsed = parseCallRegion(region);
       if ('name' in parsed) {
-        if (registered(parsed.name)) return { kind: 'retryable', name: parsed.name, args: parsed.args };
+        if (registered(parsed.name)) {
+          // Count every other candidate that parses to this same call: replies
+          // that hit an invalid/timed-out tool call re-emit the identical call
+          // in the same reply, and a retry must dispatch it exactly once.
+          // Candidates INSIDE this call's own region (e.g. the inner invoke of
+          // a function_calls wrapper) are the same single call, not copies.
+          let identicalCopies = 1;
+          for (const other of candidates) {
+            if (other.index >= end) {
+              const otherEnd =
+                text[other.index] === '{'
+                  ? other.index + sliceJson(text, other.index).length
+                  : other.index + sliceXml(text, other.index).length;
+              const otherParsed = parseCallRegion(text.slice(other.index, otherEnd));
+              if (
+                'name' in otherParsed &&
+                otherParsed.name === parsed.name &&
+                stableJson(otherParsed.args) === stableJson(parsed.args)
+              ) {
+                identicalCopies += 1;
+              }
+            }
+          }
+          return { kind: 'retryable', name: parsed.name, args: parsed.args, identicalCopies };
+        }
         unregisteredReasons.push(`the tool '${parsed.name}' is not registered`);
       } else {
         parseReasons.push(parsed.reason);

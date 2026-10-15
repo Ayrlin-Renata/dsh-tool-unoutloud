@@ -65,6 +65,14 @@ calls, and numeric/boolean/JSON parameter values.
   pending (its schema would otherwise cost tokens on every request),
 - pending calls expire (`retryTtlMs`, default 5 min) and are single-shot on
   success, capped at `maxRetryAttempts` (default 3),
+- **duplicate-call collapse**: if the stray reply repeats the *same* call two
+  or more times (e.g. a retry after a "[Tool calls marked as invalid or timed
+  out]" marker re-emits the call verbatim), the detector counts the identical
+  copies (`identicalCopies`, compared on a canonicalized key so re-ordered
+  `<parameter>`s still match) and the retry dispatches **exactly one** copy —
+  both the nudge and the tool result say so, so the agent knows it was deduped;
+  this is scoped to identical calls inside one reply, not cross-turn in-flight
+  tracking,
 - every listener is wrapped in try/catch — the plugin can never throw into the
   agent loop, and the detector is written to degrade to `none` on any internal
   error,

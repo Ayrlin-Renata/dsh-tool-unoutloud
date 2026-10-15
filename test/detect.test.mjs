@@ -264,3 +264,80 @@ test('nudges stay within the token budget (roughly < 90 words)', () => {
 test('default example-skip pattern is a valid regex', () => {
   assert.doesNotThrow(() => new RegExp(DEFAULT_EXAMPLE_SKIP, 'i'));
 });
+
+// --- duplicate-call safety (the nialyns-razor invalid-timeout regression) ---
+// A reply that hit "[Tool calls marked as invalid or timed out]" re-emits the
+// IDENTICAL call; the retry must still dispatch exactly one copy, and both
+// the nudge and the tool result must say so.
+// Tag literals are assembled at runtime (transport lesson): a literal
+// less-than inside a tool-call argument corrupts the wire payload.
+
+const LT = String.fromCharCode(60);
+const op = (tag, name) => (name ? LT + tag + ' name="' + name + '">' : LT + tag + '>');
+const TIMEOUT_MARKER = '[Tool calls marked as invalid or timed out]';
+const READ1 =
+  op('invoke name="read"') +
+  op('parameter', 'file_path') + 'F:\\Fun\\Games\\Janitor\\scripts\\structure_probe.mjs' + close('parameter') +
+  op('parameter', 'limit') + '30' + close('parameter') +
+  op('parameter', 'offset') + '36' + close('parameter') +
+  close('invoke');
+
+test('dup: identical repeated call reports identicalCopies=2 (real issue shape)', () => {
+  const v = detect({ text: 'Working on it.\n' + READ1 + '\n' + TIMEOUT_MARKER + '\n' + READ1 });
+  assert.equal(v.kind, 'retryable');
+  assert.equal(v.name, 'read');
+  assert.equal(v.identicalCopies, 2);
+});
+
+test('dup: reordered parameter keys still count as identical (stable compare)', () => {
+  const reordered =
+  op('invoke name="read"') +
+  op('parameter', 'file_path') + 'F:\\Fun\\Games\\Janitor\\scripts\\structure_probe.mjs' + close('parameter') +
+  op('parameter', 'offset') + '36' + close('parameter') +
+  op('parameter', 'limit') + '30' + close('parameter') +
+  close('invoke');
+  const v = detect({ text: READ1 + '\n' + TIMEOUT_MARKER + '\n' + reordered });
+  assert.equal(v.kind, 'retryable');
+  assert.equal(v.identicalCopies, 2, 'stable comparison, not raw-text equality');
+});
+
+test('dup: differing args are NOT counted as copies', () => {
+  const other =
+  op('invoke name="read"') +
+  op('parameter', 'file_path') + 'C:\\elsewhere\\x.txt' + close('parameter') +
+  close('invoke');
+  const v = detect({ text: READ1 + '\n' + other });
+  assert.equal(v.kind, 'retryable');
+  assert.equal(v.identicalCopies, 1);
+});
+
+test('dup: single stray call reports identicalCopies=1', () => {
+  const v = detect({ text: 'On it.\n' + READ1 });
+  assert.equal(v.kind, 'retryable');
+  assert.equal(v.identicalCopies, 1);
+});
+
+test('dup: wrapper inner invoke is the SAME call, not a copy', () => {
+  const v = detect({ text: op('function_calls') + READ1 + close('function_calls') });
+  assert.equal(v.kind, 'retryable');
+  assert.equal(v.identicalCopies, 1, 'the inner invoke must not double-count');
+});
+
+test('dup: three identical calls report identicalCopies=3', () => {
+  const v = detect({
+  text: READ1 + '\n' + TIMEOUT_MARKER + '\n' + READ1 + '\n' + TIMEOUT_MARKER + '\n' + READ1,
+  });
+  assert.equal(v.kind, 'retryable');
+  assert.equal(v.identicalCopies, 3);
+});
+
+test('nudge: duplicates state the retry sends it only once', () => {
+  const n = nudgeText({ kind: 'retryable', name: 'read', args: {}, identicalCopies: 2 }, 'retry_stray_call');
+  assert.match(n, /repeated that same call 2 times/);
+  assert.match(n, /only once/);
+});
+
+test('nudge: no duplicates omits the repeat wording', () => {
+  const n = nudgeText({ kind: 'retryable', name: 'read', args: {} }, 'retry_stray_call');
+  assert.doesNotMatch(n, /repeated/);
+});
